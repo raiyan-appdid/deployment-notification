@@ -45,6 +45,25 @@ function statusOf(p) {
 }
 
 // Map Dokploy's payload (see packages/server/src/utils/notifications/*.ts) to label/value pairs
+// Timezone used to show the time in messages (Dokploy sends server time, usually UTC)
+const TIMEZONE = process.env.TIMEZONE || "Asia/Kolkata";
+
+function formatTime(p) {
+  const d = new Date(p.timestamp || Date.now());
+  if (isNaN(d)) return p.date || "";
+  try {
+    return d.toLocaleString("en-IN", {
+      timeZone: TIMEZONE, day: "2-digit", month: "short", year: "numeric",
+      hour: "2-digit", minute: "2-digit", hour12: true,
+    });
+  } catch {
+    return d.toISOString();
+  }
+}
+
+const cap = (s) => (s ? String(s).charAt(0).toUpperCase() + String(s).slice(1) : s);
+
+// Map Dokploy's payload (see packages/server/src/utils/notifications/*.ts) to label/value pairs
 function fieldsOf(p) {
   const f = [];
   const add = (name, value) => {
@@ -52,7 +71,7 @@ function fieldsOf(p) {
   };
   add("Project", p.projectName);
   add("Application", p.applicationName);
-  add("Type", p.applicationType || p.databaseType || p.serviceType);
+  add("Type", cap(p.applicationType || p.databaseType || p.serviceType));
   add("Database", p.databaseName);
   add("Volume", p.volumeName);
   add("Server", p.serverName);
@@ -61,12 +80,52 @@ function fieldsOf(p) {
     add("Current", p.currentValue);
     add("Threshold", p.threshold);
   }
-  add("Domains", p.domains);
+  add("Domain", p.domains);
+  if (p._commit?.message) {
+    // With a hash it's a git push; without one it's e.g. "Manual deployment" / "Rebuild deployment"
+    if (p._commit.hash) add("Commit", `${truncate(p._commit.message, 200)} (${p._commit.hash})`);
+    else add("Trigger", truncate(p._commit.message, 200));
+  }
   add("Backup", p.backupType);
   add("Size", p.backupSize);
   add("Details", p.cleanupMessage);
-  add("Time", p.date || p.timestamp);
+  add("Time", formatTime(p));
   return f;
+}
+
+// ---- Commit message lookup -------------------------------------------------
+// Dokploy doesn't include the commit in its notification, but it stores it as the
+// deployment title ("Hash: <sha>" in the description). We read the latest deployment
+// through Dokploy's API using the service id found in buildLink.
+// Needs DOKPLOY_API_KEY (Dokploy -> Profile -> API/CLI -> Generate). Optional.
+const DOKPLOY_API_KEY = process.env.DOKPLOY_API_KEY || "";
+const DOKPLOY_URL = (process.env.DOKPLOY_URL || "").replace(/\/+$/, "");
+
+async function lookupCommit(p) {
+  if (!DOKPLOY_API_KEY || typeof p.buildLink !== "string") return null;
+  const m = p.buildLink.match(/\/services\/(application|compose)\/([A-Za-z0-9_-]+)/);
+  if (!m) return null;
+  const base = DOKPLOY_URL || new URL(p.buildLink).origin;
+  const url =
+    m[1] === "application"
+      ? `${base}/api/deployment.all?applicationId=${encodeURIComponent(m[2])}`
+      : `${base}/api/deployment.allByCompose?composeId=${encodeURIComponent(m[2])}`;
+  try {
+    const res = await fetch(url, {
+      headers: { "x-api-key": DOKPLOY_API_KEY, accept: "application/json" },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const list = await res.json();
+    const latest = Array.isArray(list) ? list[0] : null;
+    if (!latest) return null;
+    const hash = (String(latest.description || "").match(/Hash:\s*([0-9a-f]{7,40})/i) || [])[1] || "";
+    const message = String(latest.title || "").split("\n")[0].trim();
+    return { message, hash: hash.slice(0, 7) };
+  } catch (e) {
+    console.warn(`commit lookup failed: ${e.message}`);
+    return null;
+  }
 }
 
 function buildBitrixMessage(p, dialogId) {
@@ -74,30 +133,28 @@ function buildBitrixMessage(p, dialogId) {
   const title = clean(p.title || "Dokploy notification");
   const fields = fieldsOf(p);
   const error = p.errorMessage ? truncate(clean(p.errorMessage), 1500) : "";
-  const link = typeof p.buildLink === "string" && /^https?:\/\//.test(p.buildLink) ? p.buildLink : "";
 
-  // Plain-text body (always sent: shows in push notifications and as a fallback)
+  // One "Label: value" per line - renders cleanly on desktop and mobile
+  const lines = fields.map(([k, v]) => `[B]${k}:[/B] ${v}`).join("\n");
+
+  // Title line (also what shows in push notifications)
   let text = `${ICONS[st]} [B]${title}[/B]`;
-  if (p.message && !USE_ATTACH) text += `\n${clean(p.message)}`;
   if (!USE_ATTACH) {
-    for (const [k, v] of fields) text += `\n[B]${k}:[/B] ${v}`;
-    if (error) text += `\n[B]Error:[/B]\n[CODE]${error}[/CODE]`;
-    if (link) text += `\n[URL=${link}]Open in Dokploy[/URL]`;
+    if (p.message) text += `\n${clean(p.message)}`;
+    if (lines) text += `\n\n${lines}`;
+    if (error) text += `\n\n[B]Error:[/B]\n[CODE]${error}[/CODE]`;
   }
 
   const body = { DIALOG_ID: dialogId, MESSAGE: text, URL_PREVIEW: "N" };
 
   if (USE_ATTACH) {
     const blocks = [];
-    if (p.message) blocks.push({ MESSAGE: clean(p.message) });
-    if (fields.length) {
-      blocks.push({ GRID: fields.map(([NAME, VALUE]) => ({ NAME, VALUE, DISPLAY: "LINE", WIDTH: 110 })) });
-    }
+    if (p.message) blocks.push({ MESSAGE: `[I]${clean(p.message)}[/I]` });
+    if (lines) blocks.push({ MESSAGE: lines });
     if (error) {
       blocks.push({ DELIMITER: { SIZE: 200, COLOR: "#c6c6c6" } });
       blocks.push({ MESSAGE: `[B]Error:[/B]\n${error}` });
     }
-    if (link) blocks.push({ LINK: { NAME: "Open in Dokploy", LINK: link } });
     body.ATTACH = { ID: 1, COLOR: COLORS[st], BLOCKS: blocks };
   }
   return body;
@@ -132,6 +189,8 @@ function readBody(req, limit = 1_000_000) {
   });
 }
 
+const isBuild = (p) => p.type === "build";
+
 const reply = (res, code, obj) => {
   res.writeHead(code, { "Content-Type": "application/json" });
   res.end(JSON.stringify(obj));
@@ -155,6 +214,8 @@ const server = http.createServer(async (req, res) => {
   if (payload.type && IGNORE_TYPES.includes(payload.type)) {
     return reply(res, 200, { ok: true, skipped: payload.type });
   }
+
+  if (isBuild(payload)) payload._commit = await lookupCommit(payload);
 
   try {
     const ids = await Promise.all(DIALOG_IDS.map((d) => sendToBitrix(buildBitrixMessage(payload, d))));

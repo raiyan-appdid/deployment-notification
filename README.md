@@ -37,6 +37,9 @@ curl -X POST "https://yourcompany.bitrix24.com/rest/25/k8x2abc9.../im.message.ad
 | `RELAY_SECRET` | `openssl rand -hex 24` | required in practice; Dokploy sends it as a header |
 | `BITRIX_USE_ATTACH` | `true` | `false` = plain text instead of the colored card |
 | `IGNORE_TYPES` | `docker-cleanup` | optional, skips noisy events |
+| `DOKPLOY_API_KEY` | from Profile → API/CLI | optional, adds the **Commit** line to build messages |
+| `DOKPLOY_URL` | `https://dokploy.yourdomain.com` | optional, defaults to the address in Dokploy's build link |
+| `TIMEZONE` | `Asia/Kolkata` | optional (default Asia/Kolkata), time shown in messages |
 
 4. Add a domain for the app (for example `bitrix-relay.yourdomain.com`, container port **3000**, HTTPS on) and deploy. Opening `https://bitrix-relay.yourdomain.com/health` should show `{"ok":true}`.
 
@@ -52,7 +55,7 @@ You can keep Discord running alongside while you check that everything arrives, 
 
 ## What the messages look like
 
-Each message has a bold title with a status icon (✅ success, ❌ error, ⚠️ server alert, ℹ️ other) and a card with a colored bar (green/red/amber/blue) showing Project, Application, Type, Domains, Time, the error output (trimmed to 1,500 characters) and an "Open in Dokploy" link to the build log.
+Each message has a bold title with a status icon (✅ success, ❌ error, ⚠️ server alert, ℹ️ other) and a card with a colored bar (green/red/amber/blue) with one "Label: value" per line (Project, Application, Type, Domain, Time) and, on failures, the error output trimmed to 1,500 characters.
 
 ## Troubleshooting
 
