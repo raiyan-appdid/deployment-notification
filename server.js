@@ -44,7 +44,6 @@ function statusOf(p) {
   return "info";
 }
 
-// Map Dokploy's payload (see packages/server/src/utils/notifications/*.ts) to label/value pairs
 // Timezone used to show the time in messages (Dokploy sends server time, usually UTC)
 const TIMEZONE = process.env.TIMEZONE || "Asia/Kolkata";
 
@@ -63,6 +62,13 @@ function formatTime(p) {
 
 const cap = (s) => (s ? String(s).charAt(0).toUpperCase() + String(s).slice(1) : s);
 
+// Emoji shown in front of each label
+const FIELD_ICONS = {
+  Project: "📁", App: "📦", Type: "⚙️", Database: "🗄️", Volume: "💾", Server: "🖥️",
+  Metric: "📊", Current: "📈", Threshold: "🚧", Commit: "📝", Trigger: "🔀",
+  Backup: "🗂️", Size: "📏", Details: "🧹", Time: "🕒",
+};
+
 // Map Dokploy's payload (see packages/server/src/utils/notifications/*.ts) to label/value pairs
 function fieldsOf(p) {
   const f = [];
@@ -70,7 +76,7 @@ function fieldsOf(p) {
     if (value !== undefined && value !== null && String(value).trim() !== "") f.push([name, clean(value)]);
   };
   add("Project", p.projectName);
-  add("Application", p.applicationName);
+  add("App", p.applicationName);
   add("Type", cap(p.applicationType || p.databaseType || p.serviceType));
   add("Database", p.databaseName);
   add("Volume", p.volumeName);
@@ -80,7 +86,6 @@ function fieldsOf(p) {
     add("Current", p.currentValue);
     add("Threshold", p.threshold);
   }
-  add("Domain", p.domains);
   if (p._commit?.message) {
     // With a hash it's a git push; without one it's e.g. "Manual deployment" / "Rebuild deployment"
     if (p._commit.hash) add("Commit", `${truncate(p._commit.message, 200)} (${p._commit.hash})`);
@@ -91,6 +96,14 @@ function fieldsOf(p) {
   add("Details", p.cleanupMessage);
   add("Time", formatTime(p));
   return f;
+}
+
+// Friendly second line under the title
+function subtitleOf(p) {
+  const app = p.applicationName ? clean(p.applicationName) : "";
+  if (p.type === "build" && p.status === "success" && app) return `${app} is live 🎉`;
+  if (p.type === "build" && p.status === "error" && app) return `${app} failed to build 💥`;
+  return p.message ? clean(p.message) : "";
 }
 
 // ---- Commit message lookup -------------------------------------------------
@@ -135,12 +148,12 @@ function buildBitrixMessage(p, dialogId) {
   const error = p.errorMessage ? truncate(clean(p.errorMessage), 1500) : "";
 
   // One "Label: value" per line - renders cleanly on desktop and mobile
-  const lines = fields.map(([k, v]) => `[B]${k}:[/B] ${v}`).join("\n");
+  const lines = fields.map(([k, v]) => `${FIELD_ICONS[k] || "•"} [B]${k}:[/B] ${v}`).join("\n");
 
   // Title line (also what shows in push notifications)
   let text = `${ICONS[st]} [B]${title}[/B]`;
   if (!USE_ATTACH) {
-    if (p.message) text += `\n${clean(p.message)}`;
+    if (subtitleOf(p)) text += `\n${subtitleOf(p)}`;
     if (lines) text += `\n\n${lines}`;
     if (error) text += `\n\n[B]Error:[/B]\n[CODE]${error}[/CODE]`;
   }
@@ -149,7 +162,7 @@ function buildBitrixMessage(p, dialogId) {
 
   if (USE_ATTACH) {
     const blocks = [];
-    if (p.message) blocks.push({ MESSAGE: `[I]${clean(p.message)}[/I]` });
+    if (subtitleOf(p)) blocks.push({ MESSAGE: `[I]${subtitleOf(p)}[/I]` });
     if (lines) blocks.push({ MESSAGE: lines });
     if (error) {
       blocks.push({ DELIMITER: { SIZE: 200, COLOR: "#c6c6c6" } });
